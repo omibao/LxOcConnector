@@ -61,8 +61,10 @@ class Bridge:
         self.ls = ls
         # chat_id → opencode session_id 映射（会话持久化）
         self._sessions: dict[str, str] = {}
-        # 临时会话列表缓存（/sessions 命令用序号选择）
+        # 临时会话列表缓存（/sessions + /more 用序号选择）
         self._session_list: list[dict] = []
+        self._session_offset: int = 0
+        self._page_size: int = 10
 
     async def handle(self, msg: InboundMessage) -> None:
         if not self.cfg.allow_all_users:
@@ -88,7 +90,9 @@ class Bridge:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("/sessions", "/ls", "/list"):
-            await self._cmd_list_sessions(msg)
+            await self._cmd_list_sessions(msg, reset=True)
+        elif cmd in ("/more", "/next"):
+            await self._cmd_list_sessions(msg, reset=False)
         elif cmd in ("/switch", "/use"):
             await self._cmd_switch(msg, arg)
         elif cmd in ("/new", "/start"):
@@ -103,7 +107,8 @@ class Bridge:
     async def _cmd_help(self, msg: InboundMessage) -> None:
         help_text = (
             "📋 可用命令：\n"
-            "/sessions — 列出 opencode 会话（带序号）\n"
+            "/sessions — 列出 opencode 会话（每页10条）\n"
+            "/more — 显示下一页会话\n"
             "/switch <序号> — 接管对应会话，继续对话\n"
             "/new — 开始全新会话\n"
             "/current — 查看当前绑定的会话\n"
@@ -112,24 +117,34 @@ class Bridge:
         )
         await self._send(msg, help_text)
 
-    async def _cmd_list_sessions(self, msg: InboundMessage) -> None:
-        try:
-            sessions = await self.oc.list_all_sessions()
-        except Exception as e:
-            await self._send(msg, f"❌ 获取会话列表失败：{e}")
-            return
-        # 按创建时间倒序，取最近 10 个
-        def _time(s):
-            t = s.get("time", 0)
-            if isinstance(t, dict):
-                return t.get("created", 0)
-            return t
-        sessions.sort(key=_time, reverse=True)
-        self._session_list = sessions[:10]
-        if not self._session_list:
+    async def _cmd_list_sessions(self, msg: InboundMessage, reset: bool = True) -> None:
+        if reset or not self._session_list:
+            try:
+                sessions = await self.oc.list_all_sessions()
+            except Exception as e:
+                await self._send(msg, f"❌ 获取会话列表失败：{e}")
+                return
+            def _time(s):
+                t = s.get("time", 0)
+                if isinstance(t, dict):
+                    return t.get("created", 0)
+                return t
+            sessions.sort(key=_time, reverse=True)
+            self._session_list = sessions
+            self._session_offset = 0
+
+        total = len(self._session_list)
+        if total == 0:
             await self._send(msg, "暂无 opencode 会话。")
             return
-        # 并行获取每个会话的最后一条 user 消息作为摘要
+
+        offset = self._session_offset
+        page = self._session_list[offset:offset + self._page_size]
+        if not page:
+            await self._send(msg, "没有更多会话了。发 /sessions 重新从头查看。")
+            return
+
+        # 并行获取本页每个会话的最后一条 user 消息作为摘要
         async def _summary(s):
             sid = s.get("id", "")
             try:
@@ -137,23 +152,27 @@ class Bridge:
             except Exception:
                 last = ""
             return last[:50] if last else "(无对话)"
-        summaries = await asyncio.gather(*[_summary(s) for s in self._session_list])
+        summaries = await asyncio.gather(*[_summary(s) for s in page])
         current_sid = self._sessions.get(msg.chat_id)
-        # 推断当前项目目录（用于显示其他项目标记）
-        lines = ["📋 最近会话（发 /switch 序号 接管）："]
-        for i, s in enumerate(self._session_list):
+
+        has_more = offset + self._page_size < total
+        lines = [f"📋 会话列表（{offset+1}-{offset+len(page)}/{total}，发 /switch 序号 接管）："]
+        for i, s in enumerate(page):
+            global_idx = offset + i
             sid = s.get("id", "")
-            title = s.get("title", "(无标题)")
             directory = s.get("directory", "")
             marker = " ← 当前" if sid == current_sid else ""
-            # 用最后一条对话作为摘要，目录作为项目来源
             project_tag = ""
             if directory:
                 import os
                 dirname = os.path.basename(directory.replace("\\", "/").rstrip("/"))
                 project_tag = f"[{dirname}] " if dirname else ""
-            lines.append(f"{i}. {project_tag}{summaries[i]}{marker}")
+            lines.append(f"{global_idx}. {project_tag}{summaries[i]}{marker}")
+        if has_more:
+            lines.append("发 /more 查看更多")
         await self._send(msg, "\n".join(lines))
+        # 推进偏移量供下次 /more
+        self._session_offset = offset + self._page_size
 
     async def _cmd_switch(self, msg: InboundMessage, arg: str) -> None:
         if not arg:

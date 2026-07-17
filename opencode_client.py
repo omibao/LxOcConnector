@@ -113,7 +113,7 @@ class OpencodeClient:
         try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT id, title, directory, project_id, time_created FROM session WHERE time_archived IS NULL ORDER BY time_created DESC LIMIT 30"
+                "SELECT id, title, directory, project_id, time_created FROM session WHERE time_archived IS NULL ORDER BY time_created DESC LIMIT 50"
             ).fetchall()
         finally:
             conn.close()
