@@ -124,13 +124,22 @@ class Bridge:
         if not self._session_list:
             await self._send(msg, "暂无 opencode 会话。")
             return
+        # 并行获取每个会话的最后一条 user 消息作为摘要
+        async def _summary(s):
+            sid = s.get("id", "")
+            try:
+                last = await self.oc.fetch_last_user_message(sid)
+            except Exception:
+                last = ""
+            return last[:50] if last else "(无对话)"
+        summaries = await asyncio.gather(*[_summary(s) for s in self._session_list])
         current_sid = self._sessions.get(msg.chat_id)
         lines = ["📋 最近会话（发 /switch 序号 接管）："]
         for i, s in enumerate(self._session_list):
             sid = s.get("id", "")
             title = s.get("title", "(无标题)")
             marker = " ← 当前" if sid == current_sid else ""
-            lines.append(f"{i}. {title}{marker}")
+            lines.append(f"{i}. {summaries[i]}{marker}")
         await self._send(msg, "\n".join(lines))
 
     async def _cmd_switch(self, msg: InboundMessage, arg: str) -> None:

@@ -240,6 +240,28 @@ class OpencodeClient:
                 return joined
         return ""
 
+    async def fetch_last_user_message(self, session_id: str) -> str:
+        """获取会话最后一条 user 消息的文本（用于会话列表摘要）。"""
+        try:
+            r = await self._client.get(f"/session/{session_id}/message", params={"limit": 6})
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, list):
+                return ""
+            # 消息列表是倒序（最新在前），找第一条 user 文本
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                info = entry.get("info") or {}
+                if info.get("role") != "user":
+                    continue
+                for p in (entry.get("parts") or []):
+                    if isinstance(p, dict) and p.get("type") == "text" and p.get("text", "").strip():
+                        return p["text"].strip()
+            return ""
+        except Exception:
+            return ""
+
     async def abort_session(self, session_id: str) -> None:
         """中止正在运行的会话（用于超时/取消）。"""
         try:
