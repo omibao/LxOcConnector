@@ -28,7 +28,8 @@
 ## 安装
 
 ```powershell
-cd "C:\Users\zhengennan\Desktop\蓝信-opencode连接"
+git clone https://github.com/omibao/LxOcConnector.git
+cd LxOcConnector
 pip install -r requirements.txt
 ```
 
@@ -83,7 +84,7 @@ python main.py
 ## 文件结构
 
 ```
-蓝信-opencode连接/
+LxOcConnector/
 ├── main.py              # 入口：启动检查 + 组装各组件
 ├── config.py            # .env 配置加载与校验
 ├── lansenger_inbound.py # 蓝信 WebSocket 长连接入站监听（移植自 hermes-lansenger-adapter）
@@ -113,7 +114,7 @@ python main.py
 | "获取 WS 票据失败" | 检查 App ID/Secret、网关地址是否正确；私有部署确认能访问到网关 |
 | 连上但收不到消息 | 私聊：确认你是机器人创建者；群聊：确认 `REQUIRE_MENTION=true` 时有 @机器人 |
 | 回复发不出 | 看日志的蓝信 errCode/errMsg；个人机器人只能发私聊(创建者)和群聊 |
-| opencode 回复慢 | `opencode_client.py` 默认超时 300s；复杂任务工具调用较慢属正常 |
+| opencode 回复慢 | `opencode_client.py` 默认超时 600s；复杂任务工具调用较慢属正常 |
 
 ## 已知限制
 
