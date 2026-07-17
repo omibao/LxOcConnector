@@ -215,6 +215,20 @@ class Bridge:
                 break
         await self._send(msg, f"当前会话：{title}\nID: {sid}")
 
+    def _is_cross_project(self, session_id: str) -> bool:
+        """判断会话是否属于其他项目（当前 serve 实例看不到 SSE 事件）。
+
+        当前 serve 实例的 projectID 是 "global"（在 / 启动）。
+        通过 /switch 接管的其他项目会话，projectID 不同，SSE 收不到事件。
+        """
+        # 从缓存的会话列表里找该会话的 project_id
+        for s in self._session_list:
+            if s.get("id") == session_id:
+                pid = s.get("projectID") or s.get("project_id", "")
+                return pid != "global" and bool(pid)
+        # 缓存里没有（新建的会话）→ 当前项目
+        return False
+
     async def _process(self, msg: InboundMessage) -> None:
         try:
             # 1. 获取/创建 opencode session
@@ -223,31 +237,43 @@ class Bridge:
                 await self._send(msg, "❌ 无法创建 opencode 会话，请检查 opencode 服务是否运行。")
                 return
 
-            # 2. 发送"正在思考"状态提示（私聊+群聊都发，让用户知道在处理）
+            # 2. 发送"正在思考"状态提示
             if self.cfg.send_thinking:
                 await self._send(msg, "🤔 正在思考...")
 
-            # 3. 流式调用 opencode，thinking 实时转发
+            # 3. 判断是否当前项目会话
+            # 当前 serve 实例的 projectID 是 "global"，工作目录是 /
+            # 其他项目会话的 SSE 事件不会推送到当前 serve，需用同步接口
+            is_cross_project = self._is_cross_project(session_id)
+
             t0 = time.time()
-            thinking_buffer = ThinkingBuffer(
-                send_fn=lambda text: self._send(msg, text),
-                flush_interval=self.cfg.thinking_flush_interval,
-                enabled=self.cfg.send_thinking,
-            )
-            await thinking_buffer.start()
-
-            reply = await self.oc.send_prompt_streaming(
-                session_id=session_id,
-                text=msg.text,
-                provider_id=self.cfg.opencode_model_provider,
-                model_id=self.cfg.opencode_model_id,
-                on_reasoning=thinking_buffer.add,
-                on_text=None,  # text 不需要增量转发，最终一次性发
-                timeout=self.cfg.opencode_timeout,
-            )
-
-            # 刷掉剩余的 thinking
-            await thinking_buffer.flush_remaining()
+            if is_cross_project:
+                # 跨项目：SSE 收不到事件，用同步接口
+                logger.info("[桥接] 跨项目会话 %s，使用同步接口", session_id)
+                reply = await self.oc.send_prompt(
+                    session_id=session_id,
+                    text=msg.text,
+                    provider_id=self.cfg.opencode_model_provider,
+                    model_id=self.cfg.opencode_model_id,
+                )
+            else:
+                # 当前项目：SSE 流式，thinking 实时转发
+                thinking_buffer = ThinkingBuffer(
+                    send_fn=lambda text: self._send(msg, text),
+                    flush_interval=self.cfg.thinking_flush_interval,
+                    enabled=self.cfg.send_thinking,
+                )
+                await thinking_buffer.start()
+                reply = await self.oc.send_prompt_streaming(
+                    session_id=session_id,
+                    text=msg.text,
+                    provider_id=self.cfg.opencode_model_provider,
+                    model_id=self.cfg.opencode_model_id,
+                    on_reasoning=thinking_buffer.add,
+                    on_text=None,
+                    timeout=self.cfg.opencode_timeout,
+                )
+                await thinking_buffer.flush_remaining()
 
             elapsed = time.time() - t0
             logger.info("[桥接] opencode 回复耗时 %.1fs 长度 %d", elapsed, len(reply))
