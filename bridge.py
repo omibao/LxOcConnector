@@ -114,12 +114,17 @@ class Bridge:
 
     async def _cmd_list_sessions(self, msg: InboundMessage) -> None:
         try:
-            sessions = await self.oc.list_sessions()
+            sessions = await self.oc.list_all_sessions()
         except Exception as e:
             await self._send(msg, f"❌ 获取会话列表失败：{e}")
             return
         # 按创建时间倒序，取最近 10 个
-        sessions.sort(key=lambda s: s.get("time", {}).get("created", 0) if isinstance(s.get("time"), dict) else s.get("time", 0), reverse=True)
+        def _time(s):
+            t = s.get("time", 0)
+            if isinstance(t, dict):
+                return t.get("created", 0)
+            return t
+        sessions.sort(key=_time, reverse=True)
         self._session_list = sessions[:10]
         if not self._session_list:
             await self._send(msg, "暂无 opencode 会话。")
@@ -134,12 +139,20 @@ class Bridge:
             return last[:50] if last else "(无对话)"
         summaries = await asyncio.gather(*[_summary(s) for s in self._session_list])
         current_sid = self._sessions.get(msg.chat_id)
+        # 推断当前项目目录（用于显示其他项目标记）
         lines = ["📋 最近会话（发 /switch 序号 接管）："]
         for i, s in enumerate(self._session_list):
             sid = s.get("id", "")
             title = s.get("title", "(无标题)")
+            directory = s.get("directory", "")
             marker = " ← 当前" if sid == current_sid else ""
-            lines.append(f"{i}. {summaries[i]}{marker}")
+            # 用最后一条对话作为摘要，目录作为项目来源
+            project_tag = ""
+            if directory:
+                import os
+                dirname = os.path.basename(directory.replace("\\", "/").rstrip("/"))
+                project_tag = f"[{dirname}] " if dirname else ""
+            lines.append(f"{i}. {project_tag}{summaries[i]}{marker}")
         await self._send(msg, "\n".join(lines))
 
     async def _cmd_switch(self, msg: InboundMessage, arg: str) -> None:

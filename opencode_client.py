@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, AsyncIterator, Callable, Awaitable
 
 import httpx
@@ -80,6 +81,57 @@ class OpencodeClient:
         r = await self._client.get("/session")
         r.raise_for_status()
         return r.json()
+
+    async def list_all_sessions(self) -> list[dict[str, Any]]:
+        """列出所有项目的会话（跨项目），按时间倒序。
+
+        opencode 的 GET /session 只返回当前项目的会话。
+        本方法直接查 SQLite 数据库拿到所有项目的会话 ID，
+        再通过 API 逐个获取详情（含标题、消息等）。
+        """
+        import sqlite3
+        from pathlib import Path
+        # opencode 数据库路径查找
+        # 1. XDG_STATE_HOME 环境变量
+        # 2. ~/.local/share/opencode/opencode.db (CLI serve 默认)
+        # 3. ~/AppData/Roaming/ai.opencode.desktop/opencode/opencode.db (桌面 app)
+        candidates = []
+        xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+        if xdg:
+            candidates.append(Path(xdg) / "opencode.db")
+        candidates.extend([
+            Path.home() / ".local" / "share" / "opencode" / "opencode.db",
+            Path.home() / "AppData" / "Roaming" / "ai.opencode.desktop" / "opencode" / "opencode.db",
+        ])
+        db_path = next((p for p in candidates if p.exists()), None)
+        if db_path is None:
+            logger.warning("[opencode] 找不到 opencode.db（尝试过 %s），回退到当前项目会话", candidates)
+            return await self.list_sessions()
+
+        # 查所有会话 ID（按时间倒序）
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, title, directory, project_id, time_created FROM session WHERE time_archived IS NULL ORDER BY time_created DESC LIMIT 30"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # 通过 API 批量获取详情（并行）
+        session_ids = [r["id"] for r in rows]
+        async def _get(sid):
+            try:
+                r = await self._client.get(f"/session/{sid}")
+                if r.status_code == 200:
+                    return r.json()
+            except Exception:
+                pass
+            # API 失败时用 DB 数据兜底
+            row = next(r for r in rows if r["id"] == sid)
+            return {"id": sid, "title": row["title"], "directory": row["directory"], "project_id": row["project_id"]}
+        results = await asyncio.gather(*[_get(sid) for sid in session_ids])
+        return list(results)
 
     # ---- 同步消息 ----
     async def send_prompt(
