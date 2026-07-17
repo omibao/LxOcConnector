@@ -85,6 +85,9 @@ async def main_async() -> int:
         require_mention=cfg.require_mention,
     )
 
+    # 启动蓝信入站监听（WebSocket 长连接）
+    await inbound.start()
+
     # 持续运行，直到收到 Ctrl+C
     try:
         await asyncio.Event().wait()  # 永久阻塞，直到被取消
