@@ -61,15 +61,118 @@ class Bridge:
         self.ls = ls
         # chat_id → opencode session_id 映射（会话持久化）
         self._sessions: dict[str, str] = {}
+        # 临时会话列表缓存（/sessions 命令用序号选择）
+        self._session_list: list[dict] = []
 
     async def handle(self, msg: InboundMessage) -> None:
         if not self.cfg.allow_all_users:
             if self.cfg.allowed_users and msg.sender_id not in self.cfg.allowed_users:
                 logger.info("[桥接] 用户 %s 不在允许列表，忽略", msg.sender_id[:24])
                 return
+        # 群聊里 @机器人 时蓝信会追加 "@机器人名"，先去掉
+        text = msg.text.strip()
+        # 斜杠命令拦截
+        if text.startswith("/"):
+            lock = _get_lock(msg.chat_id)
+            async with lock:
+                await self._handle_command(msg, text)
+            return
         lock = _get_lock(msg.chat_id)
         async with lock:
             await self._process(msg)
+
+    # ---- 斜杠命令 ----
+    async def _handle_command(self, msg: InboundMessage, text: str) -> None:
+        parts = text.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in ("/sessions", "/ls", "/list"):
+            await self._cmd_list_sessions(msg)
+        elif cmd in ("/switch", "/use"):
+            await self._cmd_switch(msg, arg)
+        elif cmd in ("/new", "/start"):
+            await self._cmd_new(msg)
+        elif cmd in ("/current", "/info"):
+            await self._cmd_current(msg)
+        elif cmd in ("/help", "/h", "/?"):
+            await self._cmd_help(msg)
+        else:
+            await self._send(msg, f"未知命令 {cmd}。发送 /help 查看可用命令。")
+
+    async def _cmd_help(self, msg: InboundMessage) -> None:
+        help_text = (
+            "📋 可用命令：\n"
+            "/sessions — 列出 opencode 会话（带序号）\n"
+            "/switch <序号> — 接管对应会话，继续对话\n"
+            "/new — 开始全新会话\n"
+            "/current — 查看当前绑定的会话\n"
+            "/help — 显示本帮助\n"
+            "\n直接发消息（不带 /）即与当前会话对话。"
+        )
+        await self._send(msg, help_text)
+
+    async def _cmd_list_sessions(self, msg: InboundMessage) -> None:
+        try:
+            sessions = await self.oc.list_sessions()
+        except Exception as e:
+            await self._send(msg, f"❌ 获取会话列表失败：{e}")
+            return
+        # 按创建时间倒序，取最近 10 个
+        sessions.sort(key=lambda s: s.get("time", {}).get("created", 0) if isinstance(s.get("time"), dict) else s.get("time", 0), reverse=True)
+        self._session_list = sessions[:10]
+        if not self._session_list:
+            await self._send(msg, "暂无 opencode 会话。")
+            return
+        current_sid = self._sessions.get(msg.chat_id)
+        lines = ["📋 最近会话（发 /switch 序号 接管）："]
+        for i, s in enumerate(self._session_list):
+            sid = s.get("id", "")
+            title = s.get("title", "(无标题)")
+            marker = " ← 当前" if sid == current_sid else ""
+            lines.append(f"{i}. {title}{marker}")
+        await self._send(msg, "\n".join(lines))
+
+    async def _cmd_switch(self, msg: InboundMessage, arg: str) -> None:
+        if not arg:
+            await self._send(msg, "用法：/switch <序号>（先用 /sessions 查看列表）")
+            return
+        try:
+            idx = int(arg)
+        except ValueError:
+            await self._send(msg, "序号必须是数字，先用 /sessions 查看列表。")
+            return
+        if not self._session_list or idx < 0 or idx >= len(self._session_list):
+            await self._send(msg, "序号无效，先用 /sessions 刷新列表。")
+            return
+        s = self._session_list[idx]
+        sid = s.get("id", "")
+        title = s.get("title", "(无标题)")
+        self._sessions[msg.chat_id] = sid
+        await self._send(msg, f"✅ 已接管会话：{title}\n现在直接发消息即可继续对话。")
+
+    async def _cmd_new(self, msg: InboundMessage) -> None:
+        title = f"蓝信-{msg.sender_name}-{'群' if msg.is_group else '私聊'}"
+        try:
+            sid = await self.oc.create_session(title=title)
+        except Exception as e:
+            await self._send(msg, f"❌ 创建会话失败：{e}")
+            return
+        self._sessions[msg.chat_id] = sid
+        await self._send(msg, f"✅ 已创建新会话，直接发消息开始对话。")
+
+    async def _cmd_current(self, msg: InboundMessage) -> None:
+        sid = self._sessions.get(msg.chat_id)
+        if not sid:
+            await self._send(msg, "当前未绑定会话。发消息会自动创建，或用 /sessions 接管已有会话。")
+            return
+        # 尝试获取标题
+        title = "(未知)"
+        for s in self._session_list:
+            if s.get("id") == sid:
+                title = s.get("title", title)
+                break
+        await self._send(msg, f"当前会话：{title}\nID: {sid}")
 
     async def _process(self, msg: InboundMessage) -> None:
         try:
