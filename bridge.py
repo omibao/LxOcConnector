@@ -1,10 +1,10 @@
-"""桥接逻辑：蓝信消息 → opencode 会话 → AI 回复 → 蓝信回复。
+"""桥接逻辑：蓝信消息 → opencode 会话 → AI 回复（含 thinking）→ 蓝信回复。
 
 每个蓝信 chat_id 对应一个 opencode session（默认开启，保留多轮上下文）。
 收到消息后：
   1. 找到/创建该 chat 的 opencode session
-  2. 调用 send_prompt 拿到 AI 文本回复
-  3. 按 max_message_length 分段，用 lansenger-sdk 发回蓝信
+  2. 流式调用 opencode（prompt_async + SSE），实时把 thinking 转发到蓝信
+  3. 最终回复按 max_message_length 分段发回蓝信
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from lansenger_sdk import LansengerError
 
 from config import Config
 from lansenger_inbound import InboundMessage
-from opencode_client import OpencodeClient, OpencodeError
+from opencode_client import OpencodeClient, OpencodeError, OpencodeTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,6 @@ def _split_text(text: str, max_len: int) -> list[str]:
     parts: list[str] = []
     remaining = text
     while len(remaining) > max_len:
-        # 优先在最近的换行处切
         cut = remaining.rfind("\n", 0, max_len)
         if cut < max_len // 2:
             cut = max_len
@@ -64,7 +63,6 @@ class Bridge:
         self._sessions: dict[str, str] = {}
 
     async def handle(self, msg: InboundMessage) -> None:
-        # 权限检查
         if not self.cfg.allow_all_users:
             if self.cfg.allowed_users and msg.sender_id not in self.cfg.allowed_users:
                 logger.info("[桥接] 用户 %s 不在允许列表，忽略", msg.sender_id[:24])
@@ -74,8 +72,6 @@ class Bridge:
             await self._process(msg)
 
     async def _process(self, msg: InboundMessage) -> None:
-        # 先发"正在思考"提示（群聊尤其需要，避免用户以为没反应）
-        ack_sent = False
         try:
             # 1. 获取/创建 opencode session
             session_id = await self._get_or_create_session(msg)
@@ -83,29 +79,44 @@ class Bridge:
                 await self._send(msg, "❌ 无法创建 opencode 会话，请检查 opencode 服务是否运行。")
                 return
 
-            # 2. 群聊发送 ack
-            if msg.is_group:
-                await self._send(msg, "⏳ 正在处理...")
-                ack_sent = True
+            # 2. 发送"正在思考"状态提示（私聊+群聊都发，让用户知道在处理）
+            if self.cfg.send_thinking:
+                await self._send(msg, "🤔 正在思考...")
 
-            # 3. 调用 opencode
+            # 3. 流式调用 opencode，thinking 实时转发
             t0 = time.time()
-            reply = await self.oc.send_prompt(
+            thinking_buffer = ThinkingBuffer(
+                send_fn=lambda text: self._send(msg, text),
+                flush_interval=self.cfg.thinking_flush_interval,
+                enabled=self.cfg.send_thinking,
+            )
+            await thinking_buffer.start()
+
+            reply = await self.oc.send_prompt_streaming(
                 session_id=session_id,
                 text=msg.text,
                 provider_id=self.cfg.opencode_model_provider,
                 model_id=self.cfg.opencode_model_id,
+                on_reasoning=thinking_buffer.add,
+                on_text=None,  # text 不需要增量转发，最终一次性发
+                timeout=self.cfg.opencode_timeout,
             )
+
+            # 刷掉剩余的 thinking
+            await thinking_buffer.flush_remaining()
+
             elapsed = time.time() - t0
             logger.info("[桥接] opencode 回复耗时 %.1fs 长度 %d", elapsed, len(reply))
 
-            # 4. 如果之前发了 ack 且回复很快，撤回 ack（可选；这里简单覆盖）
-            # 5. 发送回复
+            # 4. 发送最终回复
             if not reply.strip():
                 await self._send(msg, "（AI 未返回文本内容）")
                 return
             for part in _split_text(reply, self.cfg.max_message_length):
                 await self._send(msg, part)
+        except OpencodeTimeout as e:
+            logger.error("[桥接] opencode 超时：%s", e)
+            await self._send(msg, f"⏰ {e}")
         except OpencodeError as e:
             logger.error("[桥接] opencode 错误：%s", e)
             await self._send(msg, f"❌ opencode 调用失败：{e}")
@@ -133,18 +144,15 @@ class Bridge:
         return sid
 
     async def _send(self, msg: InboundMessage, content: str) -> None:
-        """发回蓝信。私聊/群聊由 is_group 决定，群聊带上 @发送者。"""
+        """发回蓝信。私聊/群聊由 is_group 决定。"""
         try:
             if msg.is_group:
-                # 群聊：send_text(chat_id, content, is_group=True)
-                # 机器人身份发送，无需 userToken
                 await self.ls.send_text(
                     chat_id=msg.chat_id,
                     content=content,
                     is_group=True,
                 )
             else:
-                # 私聊：个人机器人只能与创建者私聊
                 await self.ls.send_text(
                     chat_id=msg.chat_id,
                     content=content,
@@ -153,3 +161,60 @@ class Bridge:
             logger.error("[桥接] 蓝信发送失败：%s", e)
         except Exception as e:
             logger.exception("[桥接] 发送异常：%s", e)
+
+
+class ThinkingBuffer:
+    """累积 reasoning 增量，定时分批发到蓝信。
+
+    蓝信不支持"编辑消息"，所以 thinking 只能分批发新消息。
+    每 flush_interval 秒检查一次缓冲区，有内容就发一条 "💭 ..." 消息。
+    """
+
+    def __init__(self, send_fn, flush_interval: float = 3.0, enabled: bool = True):
+        self._send_fn = send_fn
+        self._flush_interval = flush_interval
+        self._enabled = enabled
+        self._buffer: list[str] = []
+        self._flushed_any = False
+        self._task: asyncio.Task | None = None
+        self._stop = False
+
+    async def start(self) -> None:
+        if not self._enabled:
+            return
+        self._task = asyncio.create_task(self._flush_loop())
+
+    async def add(self, delta: str) -> None:
+        if not self._enabled:
+            return
+        self._buffer.append(delta)
+
+    async def _flush_loop(self) -> None:
+        while not self._stop:
+            await asyncio.sleep(self._flush_interval)
+            await self._flush()
+
+    async def _flush(self) -> None:
+        if not self._buffer:
+            return
+        text = "".join(self._buffer)
+        self._buffer.clear()
+        prefix = "💭 " if not self._flushed_any else "💭 … "
+        self._flushed_any = True
+        # 截断过长的 thinking 片段
+        if len(text) > 1500:
+            text = text[:1500] + "…"
+        try:
+            await self._send_fn(f"{prefix}{text}")
+        except Exception as e:
+            logger.warning("[桥接] thinking 发送失败: %s", e)
+
+    async def flush_remaining(self) -> None:
+        self._stop = True
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        await self._flush()

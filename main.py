@@ -62,7 +62,7 @@ async def main_async() -> int:
         return 2
 
     # 初始化各组件
-    oc = OpencodeClient(cfg.opencode_base_url, cfg.opencode_server_password)
+    oc = OpencodeClient(cfg.opencode_base_url, cfg.opencode_server_password, timeout=cfg.opencode_timeout)
     if not await check_opencode(oc):
         await oc.aclose()
         return 1

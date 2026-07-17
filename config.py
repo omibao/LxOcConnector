@@ -37,6 +37,10 @@ class Config:
     opencode_server_password: str
     opencode_model_provider: str
     opencode_model_id: str
+    opencode_timeout: int
+    # 流式 thinking 转发
+    send_thinking: bool
+    thinking_flush_interval: int
     # 行为
     require_mention: bool
     allow_all_users: bool
@@ -73,6 +77,9 @@ class Config:
             opencode_server_password=os.environ.get("OPENCODE_SERVER_PASSWORD", "").strip(),
             opencode_model_provider=os.environ.get("OPENCODE_MODEL_PROVIDER", "").strip(),
             opencode_model_id=os.environ.get("OPENCODE_MODEL_ID", "").strip(),
+            opencode_timeout=_int("OPENCODE_TIMEOUT", 600),
+            send_thinking=_bool("SEND_THINKING", True),
+            thinking_flush_interval=_int("THINKING_FLUSH_INTERVAL", 3),
             require_mention=_bool("REQUIRE_MENTION", True),
             allow_all_users=_bool("ALLOW_ALL_USERS", False),
             allowed_users=allowed,

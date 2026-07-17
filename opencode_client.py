@@ -1,17 +1,20 @@
 """opencode 服务端 HTTP 客户端 — 封装 session/message 相关调用。
 
 对应 opencode 的 Server API（OpenAPI 3.1）：
-  - POST /session                创建会话
-  - POST /session/:id/message    发送 prompt 并等待 AI 回复（同步）
-  - GET  /session                列出会话
-  - GET  /session/:id/message    列出会话消息
-  - GET  /global/health          健康检查
+  - POST /session                  创建会话
+  - POST /session/:id/message      发送 prompt 并等待 AI 回复（同步）
+  - POST /session/:id/prompt_async  异步发送 prompt（不等待，204）
+  - GET  /event                    SSE 事件流（思考/回复增量）
+  - GET  /session/:id/message      列出会话消息
+  - GET  /global/health            健康检查
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from typing import Any
+from typing import Any, AsyncIterator, Callable, Awaitable
 
 import httpx
 
@@ -22,10 +25,19 @@ class OpencodeError(Exception):
     pass
 
 
-class OpencodeClient:
-    """opencode server 的最小 HTTP 客户端。"""
+class OpencodeTimeout(OpencodeError):
+    pass
 
-    def __init__(self, base_url: str, password: str = "", timeout: float = 300.0):
+
+# 流式回调类型
+ThinkingCallback = Callable[[str], Awaitable[None]]
+TextCallback = Callable[[str], Awaitable[None]]
+
+
+class OpencodeClient:
+    """opencode server 的 HTTP 客户端，支持同步与流式两种调用方式。"""
+
+    def __init__(self, base_url: str, password: str = "", timeout: float = 600.0):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._client = httpx.AsyncClient(
@@ -41,11 +53,7 @@ class OpencodeClient:
         return None
 
     async def aclose(self) -> None:
-        await self._http().aclose()
-
-    def _http(self) -> httpx.AsyncClient:
-        # 如果上层在断连后重建过客户端，这里支持替换
-        return getattr(self, "_client", None) or httpx.AsyncClient()
+        await self._client.aclose()
 
     # ---- 健康检查 ----
     async def health(self) -> dict[str, Any]:
@@ -62,7 +70,6 @@ class OpencodeClient:
         r = await self._client.post("/session", json=body)
         r.raise_for_status()
         data = r.json()
-        # opencode 返回 { id, ... }
         sid = data.get("id") if isinstance(data, dict) else None
         if not sid:
             raise OpencodeError(f"创建会话失败：响应无 id 字段 — {r.text[:300]}")
@@ -74,7 +81,7 @@ class OpencodeClient:
         r.raise_for_status()
         return r.json()
 
-    # ---- 消息 ----
+    # ---- 同步消息 ----
     async def send_prompt(
         self,
         session_id: str,
@@ -83,11 +90,7 @@ class OpencodeClient:
         model_id: str = "",
         agent: str = "",
     ) -> str:
-        """向会话发送 prompt 并等待 AI 回复，返回回复的文本内容。
-
-        opencode 的 POST /session/:id/message 是同步接口——会等到 AI 完成
-        才返回 { info, parts }。我们在 parts 里提取所有 type==text 的文本拼接。
-        """
+        """向会话发送 prompt 并等待 AI 回复，返回回复的文本内容（同步接口）。"""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if provider_id and model_id:
             body["model"] = {"providerID": provider_id, "modelID": model_id}
@@ -100,7 +103,6 @@ class OpencodeClient:
         r.raise_for_status()
         data = r.json()
 
-        # data 结构：{ info: {...}, parts: [ {type, text}, {type, ...}, ... ] }
         parts = data.get("parts") or []
         texts: list[str] = []
         for p in parts:
@@ -110,10 +112,114 @@ class OpencodeClient:
                 texts.append(p["text"])
         reply = "\n".join(texts).strip()
         if not reply:
-            # 可能是工具调用结束但无文本输出；尝试读取消息列表兜底
             logger.warning("[opencode] 会话 %s 回复无文本 part，尝试拉取消息列表", session_id)
             reply = await self._fetch_last_assistant_text(session_id)
         return reply
+
+    # ---- 流式消息（支持 thinking 转发）----
+    async def send_prompt_streaming(
+        self,
+        session_id: str,
+        text: str,
+        provider_id: str = "",
+        model_id: str = "",
+        agent: str = "",
+        on_reasoning: ThinkingCallback | None = None,
+        on_text: TextCallback | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """异步发送 prompt，通过 SSE 流式接收 reasoning 和 text 增量。
+
+        - on_reasoning(delta): 每收到一段思考增量时回调
+        - on_text(delta): 每收到一段回复增量时回调
+        - 返回: 最终回复的完整文本
+
+        实现方式：POST /session/:id/prompt_async（返回 204，不等结果），
+        同时监听 GET /event SSE 流，过滤本 session 的事件，
+        直到收到 session.idle 表示完成。
+        """
+        to = timeout or self._timeout
+
+        # 1. 先启动 SSE 监听（确保不漏早期事件）
+        sse_ready = asyncio.Event()
+        done = asyncio.Event()
+        full_text_parts: list[str] = []
+        current_part_type: str | None = None  # "reasoning" | "text"
+
+        async def listen_sse():
+            async with self._client.stream("GET", "/event") as resp:
+                sse_ready.set()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    etype = data.get("type", "")
+                    props = data.get("properties", {})
+                    ssid = props.get("sessionID") or props.get("sessionId") or ""
+                    if ssid != session_id:
+                        continue
+
+                    if etype == "message.part.updated":
+                        p = props.get("part", {}) or {}
+                        current_part_type = p.get("type", "")
+
+                    elif etype == "message.part.delta":
+                        field = props.get("field", "")
+                        delta = props.get("delta", "")
+                        if not delta:
+                            continue
+                        # field="text" 的 delta 在 reasoning 阶段属于思考，
+                        # 在 text 阶段属于最终回复
+                        if field == "text":
+                            if current_part_type == "reasoning":
+                                if on_reasoning:
+                                    try:
+                                        await on_reasoning(delta)
+                                    except Exception as e:
+                                        logger.warning("[opencode] reasoning 回调异常: %s", e)
+                            elif current_part_type == "text":
+                                full_text_parts.append(delta)
+                                if on_text:
+                                    try:
+                                        await on_text(delta)
+                                    except Exception as e:
+                                        logger.warning("[opencode] text 回调异常: %s", e)
+
+                    elif etype == "session.idle":
+                        done.set()
+                        return
+
+        listen_task = asyncio.create_task(listen_sse())
+        try:
+            await asyncio.wait_for(sse_ready.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            listen_task.cancel()
+            raise OpencodeError("SSE 连接超时")
+
+        # 2. 异步发送 prompt
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if provider_id and model_id:
+            body["model"] = {"providerID": provider_id, "modelID": model_id}
+        elif provider_id:
+            body["model"] = {"providerID": provider_id}
+        if agent:
+            body["agent"] = agent
+
+        r = await self._client.post(f"/session/{session_id}/prompt_async", json=body)
+        if r.status_code not in (200, 204):
+            raise OpencodeError(f"prompt_async 失败：{r.status_code} {r.text[:300]}")
+
+        # 3. 等待 session.idle
+        try:
+            await asyncio.wait_for(done.wait(), timeout=to)
+        except asyncio.TimeoutError:
+            await self.abort_session(session_id)
+            raise OpencodeTimeout(f"opencode 处理超时（{to}s），已中止会话")
+
+        return "".join(full_text_parts).strip()
 
     async def _fetch_last_assistant_text(self, session_id: str) -> str:
         """从消息列表里取最后一条 assistant 消息的文本。"""
