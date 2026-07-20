@@ -127,7 +127,7 @@ class Bridge:
             def _time(s):
                 t = s.get("time", 0)
                 if isinstance(t, dict):
-                    return t.get("created", 0)
+                    return t.get("updated", 0) or t.get("created", 0)
                 return t
             sessions.sort(key=_time, reverse=True)
             self._session_list = sessions
