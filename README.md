@@ -165,7 +165,9 @@ LxOcConnector/
 | opencode CLI | ≥ 1.18 | `npm install -g opencode-ai` |
 | 蓝信个人机器人 | — | 蓝信桌面端创建 |
 
-opencode 的模型/Provider 在 `~/.config/opencode/opencode.json` 中配置，桥接通过 `OPENCODE_MODEL_PROVIDER` / `OPENCODE_MODEL_ID` 覆盖。
+opencode 的模型/Provider 在 `~/.config/opencode.json` 中配置，桥接通过 `OPENCODE_MODEL_PROVIDER` / `OPENCODE_MODEL_ID` 覆盖。
+
+> **CLI 版 vs 桌面版**：桥接需要固定端口 + 可控密码的 serve 实例。opencode 桌面版（OpenCode.exe）内置的 serve 端口和密码每次启动随机生成且不持久化，**无法接入**。请用 CLI 版运行 `opencode serve`。桌面版可与 CLI serve 并存——两者共享同一个 `~/.config/opencode` 配置和会话数据库，`/sessions` 能列出桌面版创建的会话并接管。
 
 ---
 
