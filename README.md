@@ -116,9 +116,13 @@ pip install -r requirements.txt
 会话列表格式示例：
 ```
 📋 会话列表（1-10/16，发 /switch 序号 接管）：
-0. [蓝信-opencode连接] 用三步解释闭包的概念
-1. [网安少年-opencode] 我不知道，好像是私有部署的
-2. [track-a-handoff] Optimize track-a v12 scoring
+0. [my-web-app] 修复登录页 CSS 样式错乱的问题
+1. [data-pipeline] 优化每日数据同步的并发性能
+2. [api-gateway] 给 /users 接口加分页和模糊搜索
+3. [mobile-app] App 首页白屏，可能是路由配置问题
+4. [infra-tools] 写一个自动清理过期日志的脚本
+5. [my-web-app] 帮我写单元测试覆盖 auth 模块
+6. [data-pipeline] 数据库连接池偶尔耗尽，帮忙排查
 ...
 发 /more 查看更多
 ```
