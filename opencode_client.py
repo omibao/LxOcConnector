@@ -314,6 +314,35 @@ class OpencodeClient:
         except Exception:
             return ""
 
+    async def fetch_history(self, session_id: str, limit: int = 5) -> list[dict[str, str]]:
+        """获取会话最近的对话历史，返回正序列表 [{role, text}]。
+
+        API 返回倒序（最新在前），本方法反转为正序（最旧在前）。
+        只保留有文本内容的 user/assistant 消息。
+        """
+        r = await self._client.get(f"/session/{session_id}/message", params={"limit": limit})
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, list):
+            return []
+        result: list[dict[str, str]] = []
+        for entry in reversed(data):
+            if not isinstance(entry, dict):
+                continue
+            info = entry.get("info") or {}
+            role = info.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            texts = [
+                p["text"]
+                for p in (entry.get("parts") or [])
+                if isinstance(p, dict) and p.get("type") == "text" and p.get("text", "").strip()
+            ]
+            if not texts:
+                continue
+            result.append({"role": role, "text": "\n".join(texts)})
+        return result
+
     async def abort_session(self, session_id: str) -> None:
         """中止正在运行的会话（用于超时/取消）。"""
         try:

@@ -106,6 +106,8 @@ class Bridge:
             await self._cmd_current(msg)
         elif cmd in ("/exit", "/leave", "/detach"):
             await self._cmd_exit(msg)
+        elif cmd in ("/history", "/hist"):
+            await self._cmd_history(msg, arg)
         elif cmd in ("/help", "/h", "/?"):
             await self._cmd_help(msg)
         else:
@@ -117,6 +119,7 @@ class Bridge:
             "/sessions — 列出 opencode 会话（每页10条）\n"
             "/more — 显示下一页会话\n"
             "/switch <序号> — 接管对应会话，继续对话\n"
+            "/history [N] — 查看当前会话最近N条对话（默认5）\n"
             "/new — 开始全新会话\n"
             "/current — 查看当前绑定的会话\n"
             "/exit — 取消接管，下次发消息自动新建会话\n"
@@ -229,6 +232,36 @@ class Bridge:
             await self._send(msg, "当前未绑定会话，无需退出。")
             return
         await self._send(msg, "✅ 已取消接管当前会话。下次发消息将自动新建会话。")
+
+    async def _cmd_history(self, msg: InboundMessage, arg: str) -> None:
+        sid = self._sessions.get(msg.chat_id)
+        if not sid:
+            await self._send(msg, "当前未绑定会话。先用 /switch 接管或 /new 新建。")
+            return
+        limit = 5
+        if arg:
+            try:
+                limit = max(1, min(int(arg), 50))
+            except ValueError:
+                await self._send(msg, "用法：/history [N]，N 为条数（1-50）。")
+                return
+        try:
+            history = await self.oc.fetch_history(sid, limit=limit)
+        except Exception as e:
+            await self._send(msg, f"❌ 获取历史失败：{e}")
+            return
+        if not history:
+            await self._send(msg, "该会话暂无对话记录。")
+            return
+        lines = [f"📜 最近 {len(history)} 条对话："]
+        for h in history:
+            role = h["role"]
+            label = "👤" if role == "user" else "🤖"
+            text = h["text"]
+            if len(text) > 200:
+                text = text[:200] + "…"
+            lines.append(f"{label} {text}")
+        await self._send(msg, "\n".join(lines))
 
     def _is_cross_project(self, session_id: str) -> bool:
         """判断会话是否属于其他项目（当前 serve 实例看不到 SSE 事件）。
