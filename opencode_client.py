@@ -83,18 +83,16 @@ class OpencodeClient:
         return r.json()
 
     async def list_all_sessions(self) -> list[dict[str, Any]]:
-        """列出所有项目的会话（跨项目），按时间倒序。
+        """列出所有项目的会话（跨项目），含最后一条用户消息摘要。
 
         opencode 的 GET /session 只返回当前项目的会话。
-        本方法直接查 SQLite 数据库拿到所有项目的会话 ID，
-        再通过 API 逐个获取详情（含标题、消息等）。
+        本方法直接查 SQLite 数据库，一条 SQL 拿到所有会话 + 最后一条 user 消息文本，
+        不再逐个调 API（避免 limit 不够导致摘要为空）。
         """
         import sqlite3
+        import json
         from pathlib import Path
         # opencode 数据库路径查找
-        # 1. XDG_STATE_HOME 环境变量
-        # 2. ~/.local/share/opencode/opencode.db (CLI serve 默认)
-        # 3. ~/AppData/Roaming/ai.opencode.desktop/opencode/opencode.db (桌面 app)
         candidates = []
         xdg = os.environ.get("XDG_STATE_HOME", "").strip()
         if xdg:
@@ -108,30 +106,46 @@ class OpencodeClient:
             logger.warning("[opencode] 找不到 opencode.db（尝试过 %s），回退到当前项目会话", candidates)
             return await self.list_sessions()
 
-        # 查所有会话 ID（按时间倒序）
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT id, title, directory, project_id, time_created, time_updated FROM session WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT 50"
-            ).fetchall()
+            rows = conn.execute("""
+                SELECT s.id, s.title, s.directory, s.project_id,
+                       s.time_created, s.time_updated,
+                       (
+                           SELECT p.data FROM part p
+                           JOIN message m2 ON p.message_id = m2.id
+                           WHERE m2.session_id = s.id
+                             AND json_extract(m2.data, '$.role') = 'user'
+                             AND json_extract(p.data, '$.type') = 'text'
+                           ORDER BY m2.time_created DESC
+                           LIMIT 1
+                       ) as last_user_part
+                FROM session s
+                WHERE s.time_archived IS NULL
+                ORDER BY s.time_updated DESC
+                LIMIT 50
+            """).fetchall()
         finally:
             conn.close()
 
-        # 通过 API 批量获取详情（并行）
-        session_ids = [r["id"] for r in rows]
-        async def _get(sid):
-            try:
-                r = await self._client.get(f"/session/{sid}")
-                if r.status_code == 200:
-                    return r.json()
-            except Exception:
-                pass
-            # API 失败时用 DB 数据兜底
-            row = next(r for r in rows if r["id"] == sid)
-            return {"id": sid, "title": row["title"], "directory": row["directory"], "project_id": row["project_id"]}
-        results = await asyncio.gather(*[_get(sid) for sid in session_ids])
-        return list(results)
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            last_text = ""
+            if r["last_user_part"]:
+                try:
+                    last_text = json.loads(r["last_user_part"]).get("text", "")
+                except Exception:
+                    pass
+            results.append({
+                "id": r["id"],
+                "title": r["title"],
+                "directory": r["directory"],
+                "projectID": r["project_id"],
+                "time": {"created": r["time_created"], "updated": r["time_updated"]},
+                "last_user_text": last_text,
+            })
+        return results
 
     # ---- 同步消息 ----
     async def send_prompt(

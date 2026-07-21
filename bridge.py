@@ -155,15 +155,6 @@ class Bridge:
             await self._send(msg, "没有更多会话了。发 /sessions 重新从头查看。")
             return
 
-        # 并行获取本页每个会话的最后一条 user 消息作为摘要
-        async def _summary(s):
-            sid = s.get("id", "")
-            try:
-                last = await self.oc.fetch_last_user_message(sid)
-            except Exception:
-                last = ""
-            return last[:50] if last else "(无对话)"
-        summaries = await asyncio.gather(*[_summary(s) for s in page])
         current_sid = self._sessions.get(msg.chat_id)
 
         has_more = offset + self._page_size < total
@@ -178,7 +169,9 @@ class Bridge:
                 import os
                 dirname = os.path.basename(directory.replace("\\", "/").rstrip("/"))
                 project_tag = f"[{dirname}] " if dirname else ""
-            lines.append(f"{global_idx}. {project_tag}{summaries[i]}{marker}")
+            last_text = s.get("last_user_text", "")
+            summary = last_text[:50] if last_text else "(无对话)"
+            lines.append(f"{global_idx}. {project_tag}{summary}{marker}")
         if has_more:
             lines.append("发 /more 查看更多")
         await self._send(msg, "\n".join(lines))
