@@ -104,6 +104,8 @@ class Bridge:
             await self._cmd_new(msg)
         elif cmd in ("/current", "/info"):
             await self._cmd_current(msg)
+        elif cmd in ("/exit", "/leave", "/detach"):
+            await self._cmd_exit(msg)
         elif cmd in ("/help", "/h", "/?"):
             await self._cmd_help(msg)
         else:
@@ -117,6 +119,7 @@ class Bridge:
             "/switch <序号> — 接管对应会话，继续对话\n"
             "/new — 开始全新会话\n"
             "/current — 查看当前绑定的会话\n"
+            "/exit — 取消接管，下次发消息自动新建会话\n"
             "/help — 显示本帮助\n"
             "\n直接发消息（不带 /）即与当前会话对话。"
         )
@@ -219,6 +222,13 @@ class Bridge:
                 title = s.get("title", title)
                 break
         await self._send(msg, f"当前会话：{title}\nID: {sid}")
+
+    async def _cmd_exit(self, msg: InboundMessage) -> None:
+        sid = self._sessions.pop(msg.chat_id, None)
+        if not sid:
+            await self._send(msg, "当前未绑定会话，无需退出。")
+            return
+        await self._send(msg, "✅ 已取消接管当前会话。下次发消息将自动新建会话。")
 
     def _is_cross_project(self, session_id: str) -> bool:
         """判断会话是否属于其他项目（当前 serve 实例看不到 SSE 事件）。
