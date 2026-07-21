@@ -99,4 +99,21 @@ class Config:
             errors.append("LANSENGER_API_GATEWAY_URL 未配置")
         if not self.opencode_base_url:
             errors.append("OPENCODE_BASE_URL 未配置")
+        if not self.allow_all_users and not self.allowed_users:
+            errors.append(
+                "ALLOW_ALL_USERS=false 且 ALLOWED_USERS 为空 —— 默认拒绝所有人。"
+                "如需开放请设置 ALLOW_ALL_USERS=true 或在 ALLOWED_USERS 中填写 openId。"
+            )
         return errors
+
+    def is_user_allowed(self, sender_id: str) -> bool:
+        """判断某发送者是否被允许使用本机器人。
+
+        安全默认（fail-closed）：当 allow_all_users=False 且 allowed_users
+        为空时拒绝所有人，避免「未配置允许列表」静默退化为「允许所有人」。
+        """
+        if self.allow_all_users:
+            return True
+        if not self.allowed_users:
+            return False
+        return sender_id in self.allowed_users

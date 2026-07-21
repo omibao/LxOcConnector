@@ -36,7 +36,10 @@ def _get_lock(chat_id: str) -> asyncio.Lock:
 
 
 def _split_text(text: str, max_len: int) -> list[str]:
-    """按最大长度分段，尽量在换行处断开。"""
+    """按最大长度分段，尽量在换行处断开。
+
+    不变量："".join(parts) == text（不丢失任何字符，包括换行符）。
+    """
     if len(text) <= max_len:
         return [text]
     parts: list[str] = []
@@ -45,8 +48,11 @@ def _split_text(text: str, max_len: int) -> list[str]:
         cut = remaining.rfind("\n", 0, max_len)
         if cut < max_len // 2:
             cut = max_len
-        parts.append(remaining[:cut])
-        remaining = remaining[cut:].lstrip("\n")
+            parts.append(remaining[:cut])
+            remaining = remaining[cut:]
+        else:
+            parts.append(remaining[:cut + 1])
+            remaining = remaining[cut + 1:]
     if remaining:
         parts.append(remaining)
     return parts
@@ -67,10 +73,9 @@ class Bridge:
         self._page_size: int = 10
 
     async def handle(self, msg: InboundMessage) -> None:
-        if not self.cfg.allow_all_users:
-            if self.cfg.allowed_users and msg.sender_id not in self.cfg.allowed_users:
-                logger.info("[桥接] 用户 %s 不在允许列表，忽略", msg.sender_id[:24])
-                return
+        if not self.cfg.is_user_allowed(msg.sender_id):
+            logger.info("[桥接] 用户 %s 被拒绝访问", msg.sender_id[:24])
+            return
         # 群聊里 @机器人 时蓝信会追加 "@机器人名"，先去掉
         text = msg.text.strip()
         # 斜杠命令拦截

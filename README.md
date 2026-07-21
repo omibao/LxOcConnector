@@ -210,6 +210,42 @@ pip install -r requirements.txt
 
 ---
 
+## 更新日志
+
+### v0.5.0
+
+- **[安全]** 鉴权改为 fail-closed：`ALLOW_ALL_USERS=false` 且 `ALLOWED_USERS` 为空时拒绝所有人，并在启动时报错提示（避免未配置时静默放行）
+- **[修复]** `_split_text` 分段不再丢失换行符：原版 `lstrip("\n")` 会吞掉切点处的换行，导致拼接后内容与原文不一致
+- **[测试]** 新增 63 项单元测试，覆盖文本分段、thinking 缓冲、配置加载、鉴权逻辑、入站消息解析、opencode 认证
+
+### v0.4.0
+
+- **[功能]** `/sessions` 按最新对话时间排序（`time_updated`），最近活跃的会话排最前
+- **[功能]** 蓝信斜杠命令：`/sessions` `/more` `/switch` `/new` `/current` `/help`
+- **[功能]** 跨项目列出所有 opencode 会话（查 SQLite 数据库，不限于当前 serve 项目）
+- **[功能]** 会话列表显示最后一条对话内容 + `[项目目录名]` 标签
+- **[修复]** 跨项目会话自动回退同步接口（SSE 事件不跨项目，原流式模式会永久等待）
+- **[功能]** 一键启动脚本 `start.bat` / `start.sh`
+
+### v0.3.0
+
+- **[功能]** 流式 thinking 转发：AI 思考过程每 3 秒推送到蓝信
+- **[功能]** opencode `prompt_async` + SSE 事件流接收
+- **[改进]** 超时从 300s 提到 600s，超时返回友好提示
+- **[修复]** 补上 `inbound.start()` 调用（原版漏调导致 WS 入站监听未启动）
+
+### v0.2.0
+
+- **[功能]** opencode serve HTTP 客户端（创建会话、发送 prompt、获取回复）
+- **[功能]** 蓝信 WebSocket 长连接入站监听（移植自 hermes-lansenger-adapter）
+- **[功能]** 桥接逻辑：消息路由 + 会话持久化 + 分段发送
+
+### v0.1.0
+
+- 初始版本：蓝信 ↔ opencode 桥接服务骨架
+
+---
+
 ## License
 
 MIT
