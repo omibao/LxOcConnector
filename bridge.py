@@ -236,7 +236,7 @@ class Bridge:
             try:
                 limit = max(1, min(int(arg), 50))
             except ValueError:
-                await self._send(msg, "用法：/history [N]，N 为条数（1-50）。")
+                await self._send(msg, "用法：/history [N]，N 为轮数（1-50）。")
                 return
         try:
             history = await self.oc.fetch_history(sid, limit=limit)
@@ -246,13 +246,15 @@ class Bridge:
         if not history:
             await self._send(msg, "该会话暂无对话记录。")
             return
-        lines = [f"📜 最近 {len(history)} 条对话："]
+        # 统计轮数（user 消息数）
+        rounds = sum(1 for h in history if h["role"] == "user")
+        lines = [f"📜 最近 {rounds} 轮对话："]
         for h in history:
             role = h["role"]
             label = "👤" if role == "user" else "🤖"
             text = h["text"]
-            if len(text) > 200:
-                text = text[:200] + "…"
+            if len(text) > 300:
+                text = text[:300] + "…"
             lines.append(f"{label} {text}")
         await self._send(msg, "\n".join(lines))
 

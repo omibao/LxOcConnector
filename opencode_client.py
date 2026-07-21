@@ -329,17 +329,24 @@ class OpencodeClient:
             return ""
 
     async def fetch_history(self, session_id: str, limit: int = 5) -> list[dict[str, str]]:
-        """获取会话最近的对话历史，返回正序列表 [{role, text}]。
+        """获取会话最近的对话历史，按"轮"分组返回正序列表。
 
-        API 返回倒序（最新在前），本方法反转为正序（最旧在前）。
-        只保留有文本内容的 user/assistant 消息。
+        一轮 = 一条 user 消息 + 后续所有 assistant 消息（直到下一条 user）。
+        assistant 的多段文本合并为一条。
+        limit 是轮数（不是 message 条数）。
+
+        返回: [{role: "user", text: "..."}, {role: "assistant", text: "..."}, ...]
         """
-        r = await self._client.get(f"/session/{session_id}/message", params={"limit": limit})
+        # 取足够多的 message 来凑出 limit 轮对话
+        # 一轮可能含 10+ 条 assistant message（tool call 中间步骤），多取些
+        r = await self._client.get(f"/session/{session_id}/message", params={"limit": limit * 20})
         r.raise_for_status()
         data = r.json()
         if not isinstance(data, list):
             return []
-        result: list[dict[str, str]] = []
+
+        # 先提取有文本的 user/assistant message，保持正序（最旧在前）
+        msgs: list[dict[str, str]] = []
         for entry in reversed(data):
             if not isinstance(entry, dict):
                 continue
@@ -354,7 +361,37 @@ class OpencodeClient:
             ]
             if not texts:
                 continue
-            result.append({"role": role, "text": "\n".join(texts)})
+            msgs.append({"role": role, "text": "\n".join(texts)})
+
+        # 按 user 消息分组：每个 user 开启一轮，后续 assistant 归入该轮
+        rounds: list[list[dict[str, str]]] = []
+        current: list[dict[str, str]] = []
+        for m in msgs:
+            if m["role"] == "user":
+                if current:
+                    rounds.append(current)
+                current = [m]
+            else:  # assistant
+                if not current:
+                    # 没有前置 user 的 assistant（如系统消息），单独成轮
+                    current = [m]
+                else:
+                    current.append(m)
+        if current:
+            rounds.append(current)
+
+        # 取最近 limit 轮，展平为 user/assistant 交替列表
+        recent = rounds[-limit:]
+        result: list[dict[str, str]] = []
+        for rnd in recent:
+            # user 提问
+            user_texts = [m["text"] for m in rnd if m["role"] == "user"]
+            if user_texts:
+                result.append({"role": "user", "text": "\n".join(user_texts)})
+            # assistant 回答（合并所有 assistant 文本）
+            asst_texts = [m["text"] for m in rnd if m["role"] == "assistant"]
+            if asst_texts:
+                result.append({"role": "assistant", "text": "\n".join(asst_texts)})
         return result
 
     async def abort_session(self, session_id: str) -> None:
