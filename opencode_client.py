@@ -213,50 +213,58 @@ class OpencodeClient:
         current_part_type: str | None = None  # "reasoning" | "text"
 
         async def listen_sse():
-            async with self._client.stream("GET", "/event") as resp:
-                sse_ready.set()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    try:
-                        data = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
-                    etype = data.get("type", "")
-                    props = data.get("properties", {})
-                    ssid = props.get("sessionID") or props.get("sessionId") or ""
-                    if ssid != session_id:
-                        continue
-
-                    if etype == "message.part.updated":
-                        p = props.get("part", {}) or {}
-                        current_part_type = p.get("type", "")
-
-                    elif etype == "message.part.delta":
-                        field = props.get("field", "")
-                        delta = props.get("delta", "")
-                        if not delta:
+            try:
+                async with self._client.stream("GET", "/event") as resp:
+                    sse_ready.set()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
                             continue
-                        # field="text" 的 delta 在 reasoning 阶段属于思考，
-                        # 在 text 阶段属于最终回复
-                        if field == "text":
-                            if current_part_type == "reasoning":
-                                if on_reasoning:
-                                    try:
-                                        await on_reasoning(delta)
-                                    except Exception as e:
-                                        logger.warning("[opencode] reasoning 回调异常: %s", e)
-                            elif current_part_type == "text":
-                                full_text_parts.append(delta)
-                                if on_text:
-                                    try:
-                                        await on_text(delta)
-                                    except Exception as e:
-                                        logger.warning("[opencode] text 回调异常: %s", e)
+                        try:
+                            data = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        etype = data.get("type", "")
+                        props = data.get("properties", {})
+                        ssid = props.get("sessionID") or props.get("sessionId") or ""
+                        if ssid != session_id:
+                            continue
 
-                    elif etype == "session.idle":
-                        done.set()
-                        return
+                        if etype == "message.part.updated":
+                            p = props.get("part", {}) or {}
+                            current_part_type = p.get("type", "")
+
+                        elif etype == "message.part.delta":
+                            field = props.get("field", "")
+                            delta = props.get("delta", "")
+                            if not delta:
+                                continue
+                            if field == "text":
+                                if current_part_type == "reasoning":
+                                    if on_reasoning:
+                                        try:
+                                            await on_reasoning(delta)
+                                        except Exception as e:
+                                            logger.warning("[opencode] reasoning 回调异常: %s", e)
+                                elif current_part_type == "text":
+                                    full_text_parts.append(delta)
+                                    if on_text:
+                                        try:
+                                            await on_text(delta)
+                                        except Exception as e:
+                                            logger.warning("[opencode] text 回调异常: %s", e)
+
+                        elif etype == "session.idle":
+                            done.set()
+                            return
+            except Exception as e:
+                logger.warning("[opencode] SSE 连接异常: %s", e)
+            finally:
+                # SSE 断开时（网络抖动、服务重启等）通知主流程
+                # 主流程会回退到同步 API 取结果
+                sse_ready.set()
+                if not done.is_set():
+                    done.set()
+                    self._sse_disconnected = True
 
         listen_task = asyncio.create_task(listen_sse())
         try:
@@ -278,12 +286,38 @@ class OpencodeClient:
         if r.status_code not in (200, 204):
             raise OpencodeError(f"prompt_async 失败：{r.status_code} {r.text[:300]}")
 
-        # 3. 等待 session.idle
+        # 3. 等待 session.idle（或 SSE 断开 / 超时）
+        self._sse_disconnected = False
         try:
             await asyncio.wait_for(done.wait(), timeout=to)
         except asyncio.TimeoutError:
             await self.abort_session(session_id)
             raise OpencodeTimeout(f"opencode 处理超时（{to}s），已中止会话")
+        finally:
+            if not listen_task.done():
+                listen_task.cancel()
+                try:
+                    await listen_task
+                except asyncio.CancelledError:
+                    pass
+
+        # SSE 断开但可能 opencode 已完成——回退到同步 API 取结果
+        if self._sse_disconnected:
+            logger.warning("[opencode] SSE 断开，回退同步 API 取结果")
+            # 轮询 session 状态，等 opencode 处理完
+            for _ in range(int(to)):
+                try:
+                    r = await self._client.get("/session/status")
+                    statuses = r.json()
+                    status = statuses.get(session_id, {})
+                    if status.get("type") == "idle":
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+            # 取最后一条 assistant 消息
+            reply = await self._fetch_last_assistant_text(session_id)
+            return reply
 
         return "".join(full_text_parts).strip()
 
