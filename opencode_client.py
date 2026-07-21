@@ -295,7 +295,7 @@ class OpencodeClient:
     async def fetch_last_user_message(self, session_id: str) -> str:
         """获取会话最后一条 user 消息的文本（用于会话列表摘要）。"""
         try:
-            r = await self._client.get(f"/session/{session_id}/message", params={"limit": 6})
+            r = await self._client.get(f"/session/{session_id}/message", params={"limit": 50})
             r.raise_for_status()
             data = r.json()
             if not isinstance(data, list):
