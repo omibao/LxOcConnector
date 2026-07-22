@@ -116,9 +116,9 @@ class Bridge:
     async def _cmd_help(self, msg: InboundMessage) -> None:
         help_text = (
             "📋 可用命令：\n"
-            "/sessions — 列出 opencode 会话（每页10条）\n"
+            "/sessions — 列出 opencode 会话（🔒=使用中，每页10条）\n"
             "/more — 显示下一页会话\n"
-            "/switch <序号> — 接管对应会话，继续对话\n"
+            "/switch <序号> — 接管对应会话，继续对话（使用中会自动等待）\n"
             "/history [N] — 查看当前会话最近N轮对话（默认5）\n"
             "/new — 开始全新会话\n"
             "/current — 查看当前绑定的会话\n"
@@ -157,13 +157,29 @@ class Bridge:
 
         current_sid = self._sessions.get(msg.chat_id)
 
+        # 批量查询会话状态，标记 busy 的
+        busy_sids: set[str] = set()
+        try:
+            statuses = await self.oc._client.get("/session/status")
+            if statuses.status_code == 200:
+                for sid, info in statuses.json().items():
+                    if isinstance(info, dict) and info.get("type") == "busy":
+                        busy_sids.add(sid)
+        except Exception:
+            pass
+
         has_more = offset + self._page_size < total
         lines = [f"📋 会话列表（{offset+1}-{offset+len(page)}/{total}，发 /switch 序号 接管）："]
         for i, s in enumerate(page):
             global_idx = offset + i
             sid = s.get("id", "")
             directory = s.get("directory", "")
-            marker = " ← 当前" if sid == current_sid else ""
+            markers = []
+            if sid == current_sid:
+                markers.append("← 当前")
+            if sid in busy_sids:
+                markers.append("🔒 使用中")
+            marker = f" ({', '.join(markers)})" if markers else ""
             project_tag = ""
             if directory:
                 import os
@@ -210,10 +226,17 @@ class Bridge:
         directory = s.get("directory", "")
         pid = s.get("projectID") or s.get("project_id", "")
         is_cross = pid != "global" and bool(pid)
-        # 检查目标会话是否 busy——busy 说明其他客户端正在使用，不能接管
+        # 检查目标会话是否 busy——等待几秒，持续 busy 才拒绝
         status = await self.oc.get_session_status(sid)
         if status == "busy":
-            await self._send(msg, f"⚠️ 该会话正在被其他客户端使用（busy），无法接管。\n请等对方处理完毕，或用 /new 开新会话。")
+            await self._send(msg, "⏳ 该会话正在使用中，等待 10 秒后重试...")
+            for _ in range(10):
+                await asyncio.sleep(1)
+                status = await self.oc.get_session_status(sid)
+                if status != "busy":
+                    break
+        if status == "busy":
+            await self._send(msg, "⚠️ 该会话仍在使用中（超过 10 秒），无法接管。\n请等对方处理完毕后再试，或用 /new 开新会话。")
             return
         self._sessions[msg.chat_id] = sid
         cross_hint = "\n⚠️ 跨项目会话，不支持实时思考过程，但能正常收发消息。" if is_cross else ""
