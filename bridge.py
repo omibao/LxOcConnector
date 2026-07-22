@@ -347,17 +347,19 @@ class Bridge:
         """发回蓝信。私聊/群聊由 is_group 决定。"""
         try:
             if msg.is_group:
-                await self.ls.send_text(
+                result = await self.ls.send_text(
                     chat_id=msg.chat_id,
                     content=content,
                     is_group=True,
                 )
             else:
-                await self.ls.send_text(
+                result = await self.ls.send_text(
                     chat_id=msg.chat_id,
                     content=content,
                 )
+            if not result.success:
+                logger.error("[桥接] 蓝信发送失败：%s (chat_id=%s, len=%d)", result.error, msg.chat_id[:40], len(msg.chat_id))
         except LansengerError as e:
-            logger.error("[桥接] 蓝信发送失败：%s", e)
+            logger.error("[桥接] 蓝信发送异常：%s", e)
         except Exception as e:
             logger.exception("[桥接] 发送异常：%s", e)
