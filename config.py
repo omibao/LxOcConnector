@@ -77,7 +77,7 @@ class Config:
             opencode_server_password=os.environ.get("OPENCODE_SERVER_PASSWORD", "").strip(),
             opencode_model_provider=os.environ.get("OPENCODE_MODEL_PROVIDER", "").strip(),
             opencode_model_id=os.environ.get("OPENCODE_MODEL_ID", "").strip(),
-            opencode_timeout=_int("OPENCODE_TIMEOUT", 300),
+            opencode_timeout=_int("OPENCODE_TIMEOUT", 600),
             send_thinking=_bool("SEND_THINKING", True),
             thinking_flush_interval=_int("THINKING_FLUSH_INTERVAL", 3),
             require_mention=_bool("REQUIRE_MENTION", True),
