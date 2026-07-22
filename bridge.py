@@ -187,14 +187,32 @@ class Bridge:
         except ValueError:
             await self._send(msg, "序号必须是数字，先用 /sessions 查看列表。")
             return
-        if not self._session_list or idx < 0 or idx >= len(self._session_list):
+        # 重新查询列表，确保序号与最新排序一致
+        # （/sessions 之后如果有新消息，time_updated 会变，排序会偏移）
+        try:
+            sessions = await self.oc.list_all_sessions()
+            def _time(s):
+                t = s.get("time", 0)
+                if isinstance(t, dict):
+                    return t.get("updated", 0) or t.get("created", 0)
+                return t
+            sessions.sort(key=_time, reverse=True)
+            self._session_list = sessions
+        except Exception as e:
+            await self._send(msg, f"❌ 刷新会话列表失败：{e}")
+            return
+        if idx < 0 or idx >= len(self._session_list):
             await self._send(msg, "序号无效，先用 /sessions 刷新列表。")
             return
         s = self._session_list[idx]
         sid = s.get("id", "")
         title = s.get("title", "(无标题)")
+        directory = s.get("directory", "")
+        pid = s.get("projectID") or s.get("project_id", "")
+        is_cross = pid != "global" and bool(pid)
         self._sessions[msg.chat_id] = sid
-        await self._send(msg, f"✅ 已接管会话：{title}\n现在直接发消息即可继续对话。")
+        cross_hint = "\n⚠️ 跨项目会话，不支持实时思考过程，但能正常收发消息。" if is_cross else ""
+        await self._send(msg, f"✅ 已接管会话：{title}\n目录：{directory}{cross_hint}\n现在直接发消息即可继续对话。")
 
     async def _cmd_new(self, msg: InboundMessage) -> None:
         title = f"蓝信-{msg.sender_name}-{'群' if msg.is_group else '私聊'}"
