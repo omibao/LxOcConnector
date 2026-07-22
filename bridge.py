@@ -210,6 +210,11 @@ class Bridge:
         directory = s.get("directory", "")
         pid = s.get("projectID") or s.get("project_id", "")
         is_cross = pid != "global" and bool(pid)
+        # 检查目标会话是否 busy——busy 说明其他客户端正在使用，不能接管
+        status = await self.oc.get_session_status(sid)
+        if status == "busy":
+            await self._send(msg, f"⚠️ 该会话正在被其他客户端使用（busy），无法接管。\n请等对方处理完毕，或用 /new 开新会话。")
+            return
         self._sessions[msg.chat_id] = sid
         cross_hint = "\n⚠️ 跨项目会话，不支持实时思考过程，但能正常收发消息。" if is_cross else ""
         await self._send(msg, f"✅ 已接管会话：{title}\n目录：{directory}{cross_hint}\n现在直接发消息即可继续对话。")
