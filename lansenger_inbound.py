@@ -331,6 +331,13 @@ class LansengerInbound:
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
 
         sender_id = msg_data.get("from", "")
+        sender_name = msg_data.get("senderName", "")
+        # 蓝信 WS 入站消息的 from 字段可能不是完整 openId
+        # senderName 有时反而是完整 openId。取较长的那个作为完整 openId
+        if len(sender_name) > len(sender_id) and sender_name:
+            full_openid = sender_name
+        else:
+            full_openid = sender_id
         # 群聊：跳过自己发的消息（回声防护）
         if is_group:
             self_bot_id = msg_data.get("botId")
@@ -352,14 +359,14 @@ class LansengerInbound:
                 logger.debug("[蓝信] 群消息未 @本机器人，跳过（chat=%s）", chat_id)
                 return
         else:
-            chat_id = sender_id
+            chat_id = full_openid
             is_at_me = False
             is_at_all = False
 
         msg = InboundMessage(
             chat_id=chat_id,
-            sender_id=sender_id,
-            sender_name=msg_data.get("senderName", sender_id),
+            sender_id=full_openid,
+            sender_name=sender_name or full_openid,
             text=text,
             is_group=is_group,
             msg_id=msg_id,
