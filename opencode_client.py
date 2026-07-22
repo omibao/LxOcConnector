@@ -62,6 +62,17 @@ class OpencodeClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_session_status(self, session_id: str) -> str:
+        """获取会话状态：'idle' / 'busy' / 'unknown'。"""
+        try:
+            r = await self._client.get("/session/status")
+            r.raise_for_status()
+            statuses = r.json()
+            status = statuses.get(session_id, {})
+            return status.get("type", "idle")
+        except Exception:
+            return "unknown"
+
     # ---- 会话管理 ----
     async def create_session(self, title: str | None = None) -> str:
         """创建新会话，返回 sessionID。"""

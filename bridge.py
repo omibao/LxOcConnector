@@ -280,7 +280,14 @@ class Bridge:
                 await self._send(msg, "❌ 无法创建 opencode 会话，请检查 opencode 服务是否运行。")
                 return
 
-            # 2. 发送"正在思考"状态提示
+            # 2. 检查会话状态——如果 busy（上次请求卡住），先 abort
+            status = await self.oc.get_session_status(session_id)
+            if status == "busy":
+                logger.warning("[桥接] 会话 %s 处于 busy 状态，先 abort", session_id)
+                await self.oc.abort_session(session_id)
+                await asyncio.sleep(1)
+
+            # 3. 发送"正在思考"状态提示
             if self.cfg.send_thinking:
                 await self._send(msg, "🤔 正在思考...")
 
