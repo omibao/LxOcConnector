@@ -102,8 +102,6 @@ class Bridge:
             await self._cmd_switch(msg, arg)
         elif cmd in ("/new", "/start"):
             await self._cmd_new(msg)
-        elif cmd in ("/fork", "/branch"):
-            await self._cmd_fork(msg)
         elif cmd in ("/current", "/info"):
             await self._cmd_current(msg)
         elif cmd in ("/exit", "/leave", "/detach"):
@@ -121,7 +119,6 @@ class Bridge:
             "/sessions — 列出 opencode 会话（每页10条）\n"
             "/more — 显示下一页会话\n"
             "/switch <序号> — 接管对应会话，继续对话\n"
-            "/fork — 从当前会话分叉新会话（带最近上下文，避免大会话超时）\n"
             "/history [N] — 查看当前会话最近N轮对话（默认5）\n"
             "/new — 开始全新会话\n"
             "/current — 查看当前绑定的会话\n"
@@ -227,19 +224,6 @@ class Bridge:
         self._sessions[msg.chat_id] = sid
         await self._send(msg, f"✅ 已创建新会话，直接发消息开始对话。")
 
-    async def _cmd_fork(self, msg: InboundMessage) -> None:
-        old_sid = self._sessions.get(msg.chat_id)
-        if not old_sid:
-            await self._send(msg, "当前未绑定会话。先用 /switch 接管一个会话再 fork。")
-            return
-        try:
-            new_sid = await self.oc.fork_session(old_sid)
-        except Exception as e:
-            await self._send(msg, f"❌ fork 会话失败：{e}")
-            return
-        self._sessions[msg.chat_id] = new_sid
-        await self._send(msg, f"✅ 已从当前会话分叉出新会话，带有最近上下文。\n现在直接发消息即可继续对话。")
-
     async def _cmd_current(self, msg: InboundMessage) -> None:
         sid = self._sessions.get(msg.chat_id)
         if not sid:
@@ -332,7 +316,7 @@ class Bridge:
                 await self._send(msg, part)
         except OpencodeTimeout as e:
             logger.error("[桥接] opencode 超时：%s", e)
-            await self._send(msg, f"⏰ {e}\n\n会话上下文较大，opencode 处理超时。请稍后重试，或用 /fork 从最近的消息分叉新会话。")
+            await self._send(msg, f"⏰ {e}\n\n会话上下文较大，opencode 处理超时，请稍后重试。")
         except OpencodeError as e:
             logger.error("[桥接] opencode 错误：%s", e)
             await self._send(msg, f"❌ opencode 调用失败：{e}")
