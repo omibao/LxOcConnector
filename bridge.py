@@ -302,6 +302,7 @@ class Bridge:
                 text=msg.text,
                 provider_id=self.cfg.opencode_model_provider,
                 model_id=self.cfg.opencode_model_id,
+                timeout=self.cfg.opencode_timeout,
             )
 
             elapsed = time.time() - t0
