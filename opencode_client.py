@@ -166,8 +166,13 @@ class OpencodeClient:
         provider_id: str = "",
         model_id: str = "",
         agent: str = "",
+        timeout: float | None = None,
     ) -> str:
-        """向会话发送 prompt 并等待 AI 回复，返回回复的文本内容（同步接口）。"""
+        """向会话发送 prompt 并等待 AI 回复，返回回复的文本内容（同步接口）。
+
+        如果会话 busy，opencode 会阻塞等待——本方法用 timeout 防止永久卡住。
+        """
+        to = timeout or self._timeout
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if provider_id and model_id:
             body["model"] = {"providerID": provider_id, "modelID": model_id}
@@ -176,7 +181,14 @@ class OpencodeClient:
         if agent:
             body["agent"] = agent
 
-        r = await self._client.post(f"/session/{session_id}/message", json=body)
+        try:
+            r = await asyncio.wait_for(
+                self._client.post(f"/session/{session_id}/message", json=body),
+                timeout=to,
+            )
+        except asyncio.TimeoutError:
+            await self.abort_session(session_id)
+            raise OpencodeTimeout(f"opencode 处理超时（{to}s），已中止会话")
         r.raise_for_status()
         data = r.json()
 
