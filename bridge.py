@@ -217,7 +217,22 @@ class Bridge:
             return
         self._sessions[msg.chat_id] = sid
         cross_hint = "\n⚠️ 跨项目会话，不支持实时思考过程，但能正常收发消息。" if is_cross else ""
-        await self._send(msg, f"✅ 已接管会话：{title}\n目录：{directory}{cross_hint}\n现在直接发消息即可继续对话。")
+        # 取最近一轮对话作为上下文预览
+        last_dialog = ""
+        try:
+            history = await self.oc.fetch_history(sid, limit=1)
+            if history:
+                parts = []
+                for h in history:
+                    label = "👤" if h["role"] == "user" else "🤖"
+                    text = h["text"]
+                    if len(text) > 200:
+                        text = text[:200] + "…"
+                    parts.append(f"{label} {text}")
+                last_dialog = "\n\n最近对话：\n" + "\n".join(parts)
+        except Exception:
+            pass
+        await self._send(msg, f"✅ 已接管会话：{title}\n目录：{directory}{cross_hint}{last_dialog}\n\n现在直接发消息即可继续对话。")
 
     async def _cmd_new(self, msg: InboundMessage) -> None:
         title = f"蓝信-{msg.sender_name}-{'群' if msg.is_group else '私聊'}"
