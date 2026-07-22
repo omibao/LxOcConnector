@@ -88,6 +88,23 @@ class OpencodeClient:
         logger.info("[opencode] 创建会话 %s (title=%s)", sid, title)
         return sid
 
+    async def fork_session(self, session_id: str, message_id: str = "") -> str:
+        """从指定消息分叉出新会话（只带部分上下文），返回新 sessionID。
+
+        不传 message_id 则从最后一条消息分叉。
+        """
+        body: dict[str, Any] = {}
+        if message_id:
+            body["messageID"] = message_id
+        r = await self._client.post(f"/session/{session_id}/fork", json=body)
+        r.raise_for_status()
+        data = r.json()
+        new_sid = data.get("id") if isinstance(data, dict) else None
+        if not new_sid:
+            raise OpencodeError(f"fork 会话失败：{r.text[:300]}")
+        logger.info("[opencode] fork 会话 %s → %s", session_id, new_sid)
+        return new_sid
+
     async def list_sessions(self) -> list[dict[str, Any]]:
         r = await self._client.get("/session")
         r.raise_for_status()

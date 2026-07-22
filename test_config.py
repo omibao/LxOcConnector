@@ -127,7 +127,7 @@ class TestConfigLoad(unittest.TestCase):
         self.assertEqual(cfg.lansenger_app_id, "")
         self.assertEqual(cfg.lansenger_api_gateway_url, "https://open.e.lanxin.cn/open/apigw")
         self.assertEqual(cfg.opencode_base_url, "http://localhost:4096")
-        self.assertEqual(cfg.opencode_timeout, 600)
+        self.assertEqual(cfg.opencode_timeout, 300)
         self.assertTrue(cfg.send_thinking)
         self.assertTrue(cfg.require_mention)
         self.assertFalse(cfg.allow_all_users)
@@ -164,7 +164,7 @@ class TestConfigLoad(unittest.TestCase):
             path = f.name
         try:
             cfg = Config.load(env_path=path)
-            self.assertEqual(cfg.opencode_timeout, 600)
+            self.assertEqual(cfg.opencode_timeout, 300)
         finally:
             os.unlink(path)
 
@@ -236,7 +236,7 @@ class TestConfigValidate(unittest.TestCase):
             lansenger_app_id="id", lansenger_app_secret="secret",
             lansenger_api_gateway_url="https://gw", opencode_base_url="http://localhost:4096",
             opencode_server_password="", opencode_model_provider="", opencode_model_id="",
-            opencode_timeout=600, send_thinking=True, thinking_flush_interval=3,
+            opencode_timeout=300, send_thinking=True, thinking_flush_interval=3,
             require_mention=True, allow_all_users=False, allowed_users=["u1"],
             session_persistence=True, max_message_length=4000, log_level="INFO",
         )
@@ -247,7 +247,7 @@ class TestConfigValidate(unittest.TestCase):
             lansenger_app_id="id", lansenger_app_secret="secret",
             lansenger_api_gateway_url="https://gw", opencode_base_url="http://localhost:4096",
             opencode_server_password="", opencode_model_provider="", opencode_model_id="",
-            opencode_timeout=600, send_thinking=True, thinking_flush_interval=3,
+            opencode_timeout=300, send_thinking=True, thinking_flush_interval=3,
             require_mention=True, allow_all_users=True, allowed_users=[],
             session_persistence=True, max_message_length=4000, log_level="INFO",
         )
