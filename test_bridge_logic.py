@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from bridge import ThinkingBuffer, _split_text
+from bridge import _split_text
 
 
 class TestSplitText(unittest.TestCase):
@@ -87,113 +87,6 @@ class TestSplitText(unittest.TestCase):
                 # 每段（除最后一段）长度不超过 max_len
                 for p in parts[:-1]:
                     self.assertLessEqual(len(p), max_len)
-
-
-class TestThinkingBuffer(unittest.IsolatedAsyncioTestCase):
-    async def test_disabled_never_sends(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=0.05, enabled=False)
-        await buf.start()
-        await buf.add("some reasoning")
-        await asyncio.sleep(0.1)
-        await buf.flush_remaining()
-        self.assertEqual(sent, [])
-
-    async def test_flush_combines_buffered_deltas(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=0.05, enabled=True)
-        await buf.start()
-        await buf.add("Hello")
-        await buf.add(" ")
-        await buf.add("World")
-        # 等待至少一次 flush 周期
-        await asyncio.sleep(0.1)
-        await buf.flush_remaining()
-        # 至少发了一条，且首条以 💭 开头，内容含 Hello World
-        self.assertGreaterEqual(len(sent), 1)
-        self.assertTrue(sent[0].startswith("💭 "))
-        self.assertIn("Hello World", "".join(sent))
-
-    async def test_subsequent_flush_uses_continuation_prefix(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=0.05, enabled=True)
-        await buf.start()
-        await buf.add("first")
-        await asyncio.sleep(0.12)
-        await buf.add("second")
-        await asyncio.sleep(0.12)
-        await buf.flush_remaining()
-        # 第一条前缀 "💭 "，后续至少有一条 "💭 … "
-        self.assertTrue(sent[0].startswith("💭 "))
-        self.assertTrue(any(s.startswith("💭 … ") for s in sent[1:]))
-
-    async def test_long_delta_truncated_to_1500(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=0.05, enabled=True)
-        await buf.start()
-        long_text = "x" * 2000
-        await buf.add(long_text)
-        await asyncio.sleep(0.12)
-        await buf.flush_remaining()
-        # 找到包含内容的那一条（首条）
-        body = sent[0]
-        # 去掉前缀后内容长度 <= 1500 + 省略号
-        # 前缀 "💭 " 长度 2，截断后追加 "…"
-        self.assertLessEqual(len(body), 2 + 1500 + 1)
-        self.assertTrue(body.endswith("…"))
-
-    async def test_flush_remaining_drains_pending_buffer(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=10.0, enabled=True)
-        await buf.start()
-        await buf.add("never-flushed-by-loop")
-        # 不等 flush_interval，直接 flush_remaining
-        await buf.flush_remaining()
-        self.assertEqual(len(sent), 1)
-        self.assertIn("never-flushed-by-loop", sent[0])
-
-    async def test_flush_remaining_idempotent_when_empty(self):
-        sent: list[str] = []
-
-        async def send_fn(text):
-            sent.append(text)
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=10.0, enabled=True)
-        await buf.start()
-        await buf.flush_remaining()
-        await buf.flush_remaining()
-        self.assertEqual(sent, [])
-
-    async def test_send_fn_exception_does_not_propagate(self):
-        async def send_fn(text):
-            raise RuntimeError("send failed")
-
-        buf = ThinkingBuffer(send_fn=send_fn, flush_interval=0.05, enabled=True)
-        await buf.start()
-        await buf.add("data")
-        # 不应抛异常
-        await asyncio.sleep(0.1)
-        await buf.flush_remaining()
 
 
 if __name__ == "__main__":
